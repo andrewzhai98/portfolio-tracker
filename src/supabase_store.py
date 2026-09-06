@@ -1,0 +1,276 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional
+
+from supabase import Client, create_client
+
+from src.config import AccountConfig, Settings
+
+
+class SupabaseStore:
+    def __init__(self, settings: Settings):
+        self.client: Client = create_client(
+            settings.supabase_url,
+            settings.supabase_service_role_key,
+        )
+
+    def upsert_account(self, account: AccountConfig) -> Dict[str, Any]:
+        payload = {
+            "provider": "trading212",
+            "account_key": account.account_key,
+            "account_name": account.account_name,
+            "base_currency": account.base_currency,
+        }
+        result = (
+            self.client.table("accounts")
+            .upsert(payload, on_conflict="account_key")
+            .execute()
+        )
+        rows = result.data or []
+        if rows:
+            return rows[0]
+
+        result = (
+            self.client.table("accounts")
+            .select("*")
+            .eq("account_key", account.account_key)
+            .single()
+            .execute()
+        )
+        return result.data
+
+    def list_accounts(self) -> List[Dict[str, Any]]:
+        result = self.client.table("accounts").select("*").execute()
+        return result.data or []
+
+    def create_sync_run(self, account_id: str) -> str:
+        result = (
+            self.client.table("sync_runs")
+            .insert({"account_id": account_id, "status": "running"})
+            .execute()
+        )
+        return result.data[0]["id"]
+
+    def finish_sync_run(
+        self,
+        sync_run_id: str,
+        status: str,
+        error_message: Optional[str] = None,
+        records_inserted: int = 0,
+        records_updated: int = 0,
+    ) -> None:
+        self.client.table("sync_runs").update({
+            "status": status,
+            "error_message": error_message,
+            "records_inserted": records_inserted,
+            "records_updated": records_updated,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", sync_run_id).execute()
+
+    def upsert_account_snapshot(self, payload: Dict[str, Any]) -> None:
+        self.client.table("account_snapshots").upsert(
+            payload,
+            on_conflict="account_id,snapshot_date",
+        ).execute()
+
+    def delete_position_snapshots(self, account_id: str, snapshot_date: date) -> int:
+        """Replace daily positions instead of only upserting into them.
+
+        Trading 212 parsing improvements can change a previous fallback ticker
+        such as unknown_position_* into a real ticker. Deleting the account/date
+        slice first prevents stale fallback rows from co-existing with the fresh
+        correctly parsed rows.
+        """
+        result = (
+            self.client.table("position_snapshots")
+            .delete()
+            .eq("account_id", account_id)
+            .eq("snapshot_date", snapshot_date.isoformat())
+            .execute()
+        )
+        return len(result.data or [])
+
+    def get_unknown_position_snapshot_dates(self) -> List[Dict[str, Any]]:
+        result = (
+            self.client.table("position_snapshots")
+            .select("account_id, snapshot_date")
+            .like("ticker", "unknown_position_%")
+            .execute()
+        )
+        rows = result.data or []
+        seen = set()
+        unique_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            key = (row.get("account_id"), row.get("snapshot_date"))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_rows.append(row)
+        return unique_rows
+
+    def delete_unknown_position_snapshots(self) -> int:
+        result = (
+            self.client.table("position_snapshots")
+            .delete()
+            .like("ticker", "unknown_position_%")
+            .execute()
+        )
+        return len(result.data or [])
+
+    def upsert_position_snapshots(self, payloads: Iterable[Dict[str, Any]]) -> int:
+        rows = list(payloads)
+        if not rows:
+            return 0
+        self.client.table("position_snapshots").upsert(
+            rows,
+            on_conflict="account_id,snapshot_date,ticker",
+        ).execute()
+        return len(rows)
+
+    def upsert_transactions(self, payloads: Iterable[Dict[str, Any]]) -> int:
+        rows = list(payloads)
+        if not rows:
+            return 0
+        self.client.table("transactions").upsert(
+            rows,
+            on_conflict="account_id,provider_transaction_id",
+        ).execute()
+        return len(rows)
+
+    def upsert_daily_cash_flow(self, payload: Dict[str, Any]) -> None:
+        self.client.table("daily_cash_flows").upsert(
+            payload,
+            on_conflict="account_id,flow_date",
+        ).execute()
+
+    def upsert_daily_metric(self, payload: Dict[str, Any]) -> None:
+        self.client.table("daily_metrics").upsert(
+            payload,
+            on_conflict="account_id,metric_date",
+        ).execute()
+
+    def delete_daily_metric(self, account_id: str, metric_date: date) -> int:
+        result = (
+            self.client.table("daily_metrics")
+            .delete()
+            .eq("account_id", account_id)
+            .eq("metric_date", metric_date.isoformat())
+            .execute()
+        )
+        return len(result.data or [])
+
+    def get_account_snapshot(self, account_id: str, snapshot_date: date) -> Optional[Dict[str, Any]]:
+        result = (
+            self.client.table("account_snapshots")
+            .select("*")
+            .eq("account_id", account_id)
+            .eq("snapshot_date", snapshot_date.isoformat())
+            .maybe_single()
+            .execute()
+        )
+        return result.data
+
+    def get_previous_account_snapshot(self, account_id: str, before_date: date) -> Optional[Dict[str, Any]]:
+        result = (
+            self.client.table("account_snapshots")
+            .select("*")
+            .eq("account_id", account_id)
+            .lt("snapshot_date", before_date.isoformat())
+            .order("snapshot_date", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        return rows[0] if rows else None
+
+    def get_position_snapshots(self, account_id: str, snapshot_date: date) -> List[Dict[str, Any]]:
+        result = (
+            self.client.table("position_snapshots")
+            .select("*")
+            .eq("account_id", account_id)
+            .eq("snapshot_date", snapshot_date.isoformat())
+            .execute()
+        )
+        return result.data or []
+
+    def get_month_start_snapshot(self, account_id: str, snapshot_date: date) -> Optional[Dict[str, Any]]:
+        month_start = snapshot_date.replace(day=1)
+        result = (
+            self.client.table("account_snapshots")
+            .select("*")
+            .eq("account_id", account_id)
+            .gte("snapshot_date", month_start.isoformat())
+            .lte("snapshot_date", snapshot_date.isoformat())
+            .order("snapshot_date")
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        return rows[0] if rows else None
+
+    def get_recent_daily_metrics(self, limit: int = 30) -> List[Dict[str, Any]]:
+        result = (
+            self.client.table("daily_metrics")
+            .select("*, accounts(account_key, account_name, base_currency)")
+            .order("metric_date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data or []
+
+    def get_recent_daily_cash_flows(self, limit: int = 200) -> List[Dict[str, Any]]:
+        result = (
+            self.client.table("daily_cash_flows")
+            .select("*, accounts(account_key, account_name, base_currency)")
+            .order("flow_date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data or []
+
+    def get_recent_account_snapshots(self, limit: int = 200) -> List[Dict[str, Any]]:
+        result = (
+            self.client.table("account_snapshots")
+            .select("*, accounts(account_key, account_name, base_currency)")
+            .order("snapshot_date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data or []
+
+    def get_latest_positions(self) -> List[Dict[str, Any]]:
+        result = self.client.rpc("get_latest_positions").execute()
+        return result.data or []
+
+    def get_latest_position_snapshots(self) -> List[Dict[str, Any]]:
+        accounts_result = self.client.table("accounts").select("id, account_key, account_name, base_currency").execute()
+        accounts = accounts_result.data or []
+        all_rows: List[Dict[str, Any]] = []
+
+        for account in accounts:
+            latest_result = (
+                self.client.table("position_snapshots")
+                .select("snapshot_date")
+                .eq("account_id", account["id"])
+                .order("snapshot_date", desc=True)
+                .limit(1)
+                .execute()
+            )
+            latest_rows = latest_result.data or []
+            if not latest_rows:
+                continue
+
+            latest_date = latest_rows[0]["snapshot_date"]
+            positions_result = (
+                self.client.table("position_snapshots")
+                .select("*")
+                .eq("account_id", account["id"])
+                .eq("snapshot_date", latest_date)
+                .execute()
+            )
+            for row in positions_result.data or []:
+                row["accounts"] = account
+                all_rows.append(row)
+
+        return all_rows

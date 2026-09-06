@@ -1,0 +1,4 @@
+requests==2.32.3
+python-dotenv==1.0.1
+supabase>=2.18.0
+websockets>=13.0

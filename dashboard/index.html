@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trading 212 Portfolio Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="hero__copy">
+        <p class="eyebrow">Trading 212 · Supabase Dashboard</p>
+        <h1 id="page-title">Portfolio cockpit</h1>
+        <p class="subtitle">Dashboard 直接读取 Supabase 只读 RPC，不再依赖本地 CSV。CSV 导出保留为备份、调试和离线分析用途。</p>
+      </div>
+      <div class="hero__panel" aria-label="Portfolio total">
+        <span class="panel-label">Total value</span>
+        <strong id="total-value">—</strong>
+        <span id="as-of" class="panel-note">Connecting to Supabase</span>
+      </div>
+    </section>
+
+    <section class="grid metrics" aria-label="Portfolio summary">
+      <article class="metric-card">
+        <span>Accounts</span>
+        <strong id="account-count">—</strong>
+        <small id="base-currency">Base currency</small>
+      </article>
+      <article class="metric-card">
+        <span>Cash ratio</span>
+        <strong id="cash-ratio">—</strong>
+        <small>weighted by account value</small>
+      </article>
+      <article class="metric-card">
+        <span>Invested ratio</span>
+        <strong id="invested-ratio">—</strong>
+        <small>latest snapshot</small>
+      </article>
+      <article class="metric-card">
+        <span>Unrealized P/L</span>
+        <strong id="unrealized-pnl">—</strong>
+        <small>all accounts</small>
+      </article>
+      <article class="metric-card metric-card--quiet">
+        <span>Status</span>
+        <strong id="data-status">Loading</strong>
+        <small id="data-source">Supabase RPC</small>
+      </article>
+    </section>
+
+    <section class="layout">
+      <article class="surface account-split">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Allocation</p>
+            <h2>账户资产占比</h2>
+          </div>
+        </div>
+        <div id="allocation-chart" class="allocation-chart" aria-label="Account allocation chart"></div>
+        <div id="account-list" class="account-list"></div>
+      </article>
+
+      <article class="surface holdings-focus">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Top holdings</p>
+            <h2>持仓集中度</h2>
+          </div>
+          <span id="holdings-count" class="pill">0 holdings</span>
+        </div>
+        <div id="top-holdings" class="top-holdings"></div>
+        <div id="empty-holdings" class="empty-state" hidden>
+          <strong>Supabase 暂无持仓数据</strong>
+          <span>先运行 python scripts/run_sync.py；如果已经同步，请确认 sql/schema.sql 已重新执行并包含只读 RPC。</span>
+        </div>
+      </article>
+    </section>
+
+    <section class="surface timeseries-section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Trend</p>
+          <h2>资产趋势</h2>
+        </div>
+        <span id="trend-window" class="pill">90 days</span>
+      </div>
+      <div id="timeseries-chart" class="timeseries-chart" aria-label="Portfolio timeseries chart"></div>
+    </section>
+
+    <section class="surface table-section">
+      <div class="section-heading table-heading">
+        <div>
+          <p class="eyebrow">Positions</p>
+          <h2>持仓明细</h2>
+        </div>
+        <label class="search-box">
+          <span>Search</span>
+          <input id="position-search" type="search" placeholder="Ticker / name / account" />
+        </label>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Name</th>
+              <th>Account</th>
+              <th class="num">Qty</th>
+              <th class="num">Value</th>
+              <th class="num">Weight</th>
+              <th class="num">P/L</th>
+              <th class="num">P/L %</th>
+            </tr>
+          </thead>
+          <tbody id="positions-table"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./config.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

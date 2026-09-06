@@ -1,0 +1,29 @@
+name: Daily Trading 212 Sync
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run sync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TRADING212_ACCOUNTS: ${{ secrets.TRADING212_ACCOUNTS }}
+          TRADING212_BASE_URL: ${{ vars.TRADING212_BASE_URL || 'https://live.trading212.com' }}
+        run: python scripts/run_sync.py

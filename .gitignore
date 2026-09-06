@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+exports/
+.DS_Store
+dashboard/config.js
+dashboard/data/

@@ -75,13 +75,6 @@ class SupabaseStore:
         ).execute()
 
     def delete_position_snapshots(self, account_id: str, snapshot_date: date) -> int:
-        """Replace daily positions instead of only upserting into them.
-
-        Trading 212 parsing improvements can change a previous fallback ticker
-        such as unknown_position_* into a real ticker. Deleting the account/date
-        slice first prevents stale fallback rows from co-existing with the fresh
-        correctly parsed rows.
-        """
         result = (
             self.client.table("position_snapshots")
             .delete()
@@ -138,11 +131,58 @@ class SupabaseStore:
         ).execute()
         return len(rows)
 
+    def upsert_order_history(self, payloads: Iterable[Dict[str, Any]]) -> int:
+        rows = list(payloads)
+        if not rows:
+            return 0
+        self.client.table("order_history").upsert(
+            rows,
+            on_conflict="account_id,provider_order_id",
+        ).execute()
+        return len(rows)
+
+    def upsert_raw_api_events(self, payloads: Iterable[Dict[str, Any]]) -> int:
+        rows = list(payloads)
+        if not rows:
+            return 0
+        self.client.table("raw_api_events").upsert(
+            rows,
+            on_conflict="account_id,sync_run_id,endpoint_name,page_number",
+        ).execute()
+        return len(rows)
+
+    def insert_sync_warning(
+        self,
+        account_id: str,
+        sync_run_id: str,
+        warning_code: str,
+        warning_message: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.client.table("sync_warnings").insert({
+            "account_id": account_id,
+            "sync_run_id": sync_run_id,
+            "warning_code": warning_code,
+            "warning_message": warning_message,
+            "context": context or {},
+        }).execute()
+
     def upsert_daily_cash_flow(self, payload: Dict[str, Any]) -> None:
         self.client.table("daily_cash_flows").upsert(
             payload,
             on_conflict="account_id,flow_date",
         ).execute()
+
+    def get_daily_cash_flow(self, account_id: str, flow_date: date) -> Optional[Dict[str, Any]]:
+        result = (
+            self.client.table("daily_cash_flows")
+            .select("*")
+            .eq("account_id", account_id)
+            .eq("flow_date", flow_date.isoformat())
+            .maybe_single()
+            .execute()
+        )
+        return result.data
 
     def upsert_daily_metric(self, payload: Dict[str, Any]) -> None:
         self.client.table("daily_metrics").upsert(
@@ -234,6 +274,36 @@ class SupabaseStore:
             self.client.table("account_snapshots")
             .select("*, accounts(account_key, account_name, base_currency)")
             .order("snapshot_date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data or []
+
+    def get_recent_order_history(self, limit: int = 500) -> List[Dict[str, Any]]:
+        result = (
+            self.client.table("order_history")
+            .select("*, accounts(account_key, account_name, base_currency)")
+            .order("order_time", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data or []
+
+    def get_recent_raw_api_events(self, limit: int = 200) -> List[Dict[str, Any]]:
+        result = (
+            self.client.table("raw_api_events")
+            .select("*, accounts(account_key, account_name, base_currency)")
+            .order("captured_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data or []
+
+    def get_recent_sync_warnings(self, limit: int = 200) -> List[Dict[str, Any]]:
+        result = (
+            self.client.table("sync_warnings")
+            .select("*, accounts(account_key, account_name, base_currency)")
+            .order("created_at", desc=True)
             .limit(limit)
             .execute()
         )

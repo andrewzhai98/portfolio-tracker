@@ -6,3 +6,4 @@ exports/
 .DS_Store
 dashboard/config.js
 dashboard/data/
+.workbuddy/

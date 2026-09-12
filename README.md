@@ -1,36 +1,118 @@
-# Trading 212 Portfolio Tracker v2.4
+# Trading 212 Portfolio Tracker v2.5.4
 
-这是一个用于从多个 Trading 212 API 账号采集资产数据、写入 Supabase，并提供 Supabase 直连 Dashboard 的个人资产管理 MVP。
+这是一个用于从多个 Trading 212 API 账号采集资产数据、写入 Supabase，并提供可选 Dashboard / CSV 导出的个人资产数据仓库项目。
 
-v2.4 重点更新：
+v2.5 的重点不是可视化，而是补齐数仓验证链路：**订单明细、Raw API 归档、同步告警、本地导出审计文件**。
 
-1. **Dashboard 改为读取 Supabase**：`dashboard/index.html` 通过 Supabase JS 调用只读 RPC，不再依赖本地 CSV。
-2. **新增 Dashboard RPC**：`sql/dashboard_rpc.sql` 提供资产趋势、现金流趋势、持仓分布和 AI 报告上下文。
-3. **保留 CSV 为可选导出**：`scripts/export_csv.py` 仍可用于备份、调试和离线分析，但不再是 Dashboard 主链路。
-4. **自动化主流程明确**：推荐使用 GitHub Actions 每天运行 `python scripts/run_sync.py` 写入 Supabase。
-5. **安全边界明确**：前端只能使用 Supabase anon key；`SUPABASE_SERVICE_ROLE_KEY` 只能放在本地 `.env`、GitHub Secrets 或后端环境变量。
+> 说明：本项目只做个人资产数据采集、整理和分析前置数据准备，不构成投资建议。
 
-## 这个项目能做什么
+## v2.5.4 修复内容
 
-当前版本支持：
+v2.5.4 把 v2.5.3 的现金流修复逻辑合并进正常同步链路：以后运行 `python scripts/run_sync.py` 时，会自动根据本次 lookback window 里抓到的已成交订单，按真实成交日期写入 / 更新 `daily_cash_flows` 的买入、卖出和交易现金流，不需要每天再单独跑现金流 repair 脚本。
 
-1. 多个 Trading 212 API 账号配置，例如 Invest 和 Stocks ISA。
-2. 采集账户概览、当前持仓、当天交易流水。
-3. 写入 Supabase PostgreSQL。
-4. 保存原始 API 响应 `raw_payload`，方便后续重新解析和分析。
-5. 生成每日指标 `daily_metrics`。
-6. 聚合每日现金流 `daily_cash_flows`。
-7. 清理旧版同步造成的 `unknown_position_*` 脏数据。
-8. 导出 CSV：
-   - `daily_metrics_*.csv`
-   - `daily_cash_flows_*.csv`
-   - `account_summary_raw_*.csv`
-   - `latest_positions_*.csv`
-9. Supabase 直连 Dashboard。
-10. 支持 GitHub Actions 每日自动运行。
-11. 提供 AI 报告读取 RPC：`get_ai_report_context(p_days)`。
+本版本新增 / 调整：
 
-> 说明：本项目只做个人资产数据采集、整理和可视化前置数据准备，不构成投资建议。
+1. `scripts/run_sync.py` 正常同步时会从 transactions 和 orders 的实际日期生成现金流日期集合，不再只写当天 `snapshot_date` 一行。
+2. `daily_cash_flows.buy_amount` / `sell_amount` 会优先使用已成交买入 / 卖出订单计算；取消、失败、非成交订单不会再把现金流来源误判为 orders。
+3. 对历史现金流日期，如果当天已有旧行，会保留已有 `opening_cash`、`closing_cash`、`cash_change`，避免因为历史日期没有账户 snapshot 而覆盖成空值。
+4. `raw_payload` 会记录 `buy_amount_source = order_history`、`computed_from_order_history = true`、订单数量和排除数量，方便后续审计。
+
+### 从 v2.5.3 升级后只需要执行
+
+```bash
+python scripts/run_sync.py
+python scripts/export_csv.py
+```
+
+`repair_daily_cash_flows_from_orders.py` 仍保留，用于旧数据的手动一次性修复；日常同步不再需要单独执行它。
+
+## v2.5.3 修复内容
+
+v2.5.3 针对导出结果补齐现金流修复：`order_history` 已经能正确解析订单明细，但旧的 `daily_cash_flows` 仍显示 `buy_amount = 0` / `sell_amount = 0`。本版本新增脚本，用已经修好的 `order_history` 按账号和成交日期回填 `daily_cash_flows` 的买入 / 卖出金额。
+
+本版本新增：
+
+1. `scripts/repair_daily_cash_flows_from_orders.py`：读取现有 `daily_cash_flows` 和标准化后的 `order_history`，按 `(account_id, order_date)` 汇总已成交买入 / 卖出订单。
+2. 回填 `buy_amount`、`sell_amount`、`net_trading_cash_flow`、`transaction_count`。
+3. 在 `daily_cash_flows.raw_payload` 中记录订单来源、订单数量、订单分类，并标记 `cash_flow_repaired_from_order_history = true`。
+
+### 已经跑过 v2.5.2 的用户，只需要新增执行
+
+```bash
+python scripts/repair_daily_cash_flows_from_orders.py
+python scripts/repair_daily_cash_flows_from_orders.py --apply
+python scripts/export_csv.py
+```
+
+第一行是 dry run，用来先看会修多少个已有现金流日期；第二行才真正写回 Supabase；第三行重新导出验证文件。
+
+> 如果 `order_history` 还没有先经过 v2.5.2 修复，请先执行旧脚本 `python scripts/repair_order_history_from_raw.py --apply --delete-stale`，再执行本节现金流修复。
+
+## v2.5.2 修复内容
+
+v2.5.2 针对你最新发回的导出结果做了“Raw Data 回填”修复：数据库里已经有 `raw_payload`，但旧的 `order_history` 标准字段仍为空，所以本版本会直接从 raw order payload 重新解析订单标准字段。
+
+本版本新增：
+
+1. `scripts/repair_order_history_from_raw.py`：读取现有 `order_history.raw_payload`，重新解析 `fill.*` / `order.*`，并 upsert 为标准订单行。
+2. `scripts/export_csv.py` 导出增强：即使数据库里的旧标准字段为空，导出的 `order_history_*.csv` 也会从 `raw_payload` 自动补齐 `order_time`、`order_type`、`status`、`ticker`、`filled_quantity`、`average_price`、`total_value`、`currency`。
+3. 导出的订单增加 `legacy_provider_order_id`，方便对比旧的 `order_*` hash ID 和新的 `fill.id`。
+
+### 已经跑过 v2.5 / v2.5.1 的用户，只需要新增执行
+
+```bash
+python scripts/repair_order_history_from_raw.py
+python scripts/repair_order_history_from_raw.py --apply --delete-stale
+python scripts/export_csv.py
+```
+
+第一行是 dry run，用来先看会修多少行；第二行才真正写回 Supabase，并删除旧的空字段 `order_*` 脏行；第三行重新导出验证文件。
+
+## v2.5.1 修复内容
+
+v2.5.1 是基于你发回的本地验证导出做的订单归一化修复包：Trading 212 orders endpoint 实际已经返回订单明细，但 payload 是嵌套结构 `order.*` / `fill.*`。v2.5 已抓到 raw orders，但标准化字段没有正确展开。
+
+本版本修复：
+
+1. `order_history` 正确解析 `order.side`、`order.status`、`order.instrument.ticker`、`fill.quantity`、`fill.price`、`fill.walletImpact.netValue`、`fill.walletImpact.currency`。
+2. `provider_order_id` 优先使用 `fill.id`，避免同一个 order 下多次 fill 被覆盖。
+3. `daily_cash_flows` 可按 `fill.filledAt` / `order.createdAt` 识别当天 orders，并优先用订单明细计算买入 / 卖出金额。
+4. Raw API 归档逻辑保持不变，仍用于后续字段验证。
+
+## v2.5 新增内容
+
+1. **新增订单历史同步**：增加 `/api/v0/equity/history/orders` 拉取逻辑，写入 `order_history`，用于验证 Auto Pie / payout-to-invest 是否能从 Trading 212 API 返回订单级明细。
+2. **新增 Raw API 归档**：新增 `raw_api_events`，保存每个 endpoint/page 的原始响应，方便判断问题是“API 没返回”还是“解析逻辑漏字段”。
+3. **新增同步告警**：新增 `sync_warnings`，记录订单为空、交易同步关闭、Raw 归档关闭等情况。
+4. **增强每日现金流**：`daily_cash_flows` 会优先用当天订单明细计算买入/卖出；如果当天没有订单，则回退使用 transactions。
+5. **新增本地验证导出**：`scripts/export_csv.py` 会导出 `order_history_*`、`raw_api_events_*`、`sync_warnings_*` 和 `warehouse_audit_*`，便于你本地跑完后发回检查。
+6. **GitHub Actions 支持 v2.5 配置**：新增 orders/raw 相关环境变量。
+
+## 推荐架构
+
+正式主链路：
+
+```text
+Trading 212 API
+    ↓
+GitHub Actions / 本地手动运行
+    ↓
+python scripts/run_sync.py
+    ↓
+Supabase PostgreSQL
+    ↓
+只读 RPC / CSV 导出 / Dashboard / AI 报告
+```
+
+CSV 是验证和备份旁路：
+
+```text
+Supabase
+    ↓
+python scripts/export_csv.py
+    ↓
+exports/*.csv + warehouse_audit_*.json
+```
 
 ## 项目结构
 
@@ -47,7 +129,7 @@ portfolio-tracker-v2/
     schema.sql
     dashboard_rpc.sql
     cleanup_dirty_data.sql
-    README.md
+    v2_5_warehouse_patch.sql
   scripts/
     run_sync.py
     export_csv.py
@@ -66,391 +148,152 @@ portfolio-tracker-v2/
   README.md
 ```
 
-## 推荐架构
+## 如果你已经跑过 v2.4，只需要做这些新增步骤
 
-正式主链路：
+### 1. 在 Supabase 执行 v2.5 SQL Patch
 
-```text
-Trading 212 API
-    ↓
-GitHub Actions / 本地定时任务
-    ↓
-python scripts/run_sync.py
-    ↓
-Supabase PostgreSQL
-    ↓
-只读 RPC
-    ↓
-Dashboard / AI 报告
-```
-
-CSV 变成旁路：
+打开 Supabase SQL Editor，执行：
 
 ```text
-Supabase
-    ↓
-python scripts/export_csv.py
-    ↓
-exports/*.csv
+sql/v2_5_warehouse_patch.sql
 ```
 
-也就是说：
+它会新增：
 
-- Supabase 是唯一正式数据源。
-- Dashboard 不再读本地 CSV。
-- CSV 只用于备份、调试、Excel 分析或临时给其他工具使用。
+- `raw_api_events`
+- `order_history`
+- `sync_warnings`
+- `get_latest_order_history(p_limit integer)`
+- `get_latest_sync_warnings(p_limit integer)`
 
-## 快速开始
+不需要重复执行旧的 v2.4 基础 schema，除非你是全新数据库。
 
-### 1. 创建或更新 Supabase 表
+### 2. 新增或确认环境变量
 
-在 Supabase 项目里打开 SQL Editor，先执行：
+本地 `.env` 或 GitHub Variables 中新增/确认：
 
 ```text
-sql/schema.sql
+TRADING212_ORDERS_PATH=/api/v0/equity/history/orders
+SYNC_ORDERS=true
+ORDER_LOOKBACK_DAYS=7
+ORDER_MAX_PAGES=3
+ORDER_PAGE_DELAY_SECONDS=15
+SYNC_RAW_API=true
 ```
 
-这会创建/更新以下表：
-
-- `accounts`
-- `sync_runs`
-- `account_snapshots`
-- `position_snapshots`
-- `transactions`
-- `daily_cash_flows`
-- `daily_metrics`
-
-以及基础 RPC：
-
-- `get_latest_positions()`
-- `get_latest_dashboard_summary()`
-
-### 2. 创建 Dashboard / AI 报告 RPC
-
-继续在 Supabase SQL Editor 执行：
+已有的这些变量继续保留：
 
 ```text
-sql/dashboard_rpc.sql
-```
-
-这会新增：
-
-- `get_portfolio_timeseries(p_days integer)`：资产趋势。
-- `get_cash_flow_timeseries(p_days integer)`：现金流趋势。
-- `get_position_allocation()`：当前持仓权重。
-- `get_ai_report_context(p_days integer)`：给 AI 或自动报告读取的压缩 JSON 上下文。
-
-### 3. 配置环境变量
-
-复制环境变量模板：
-
-```bash
-cp .env.example .env
-```
-
-然后填写 `.env`：
-
-```bash
-SUPABASE_URL=https://your-project-id.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-SUPABASE_ANON_KEY=your_supabase_anon_key
-
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
 TRADING212_BASE_URL=https://live.trading212.com
-TRADING212_ACCOUNTS=invest:your_invest_api_key:your_invest_api_secret:GBP,stock_isa:your_isa_api_key:your_isa_api_secret:GBP
-
+TRADING212_ACCOUNTS=invest:api_key:api_secret:GBP,stock_isa:api_key:api_secret:GBP
 TRADING212_ACCOUNT_CASH_PATH=/api/v0/equity/account/summary
 TRADING212_PORTFOLIO_PATH=/api/v0/equity/positions
 TRADING212_TRANSACTIONS_PATH=/api/v0/equity/history/transactions
-
-EXPORT_DIR=exports
 SYNC_TRANSACTIONS=true
 TRANSACTION_LOOKBACK_DAYS=1
 TRANSACTION_MAX_PAGES=1
 TRANSACTION_PAGE_DELAY_SECONDS=15
+EXPORT_DIR=exports
 ```
 
-`TRADING212_ACCOUNTS` 格式是：
+`TRADING212_ACCOUNTS` 格式仍然是四段：
 
 ```text
 account_key:api_key:api_secret:base_currency
 ```
 
-多账号用英文逗号分隔：
+多账号用英文逗号分隔。
 
-```text
-invest:api_key_1:api_secret_1:GBP,stock_isa:api_key_2:api_secret_2:GBP
-```
-
-不要把 `.env` 提交到 Git。
-
-### 4. 安装依赖
+### 3. 本地跑一次同步和导出
 
 ```bash
-python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 5. 如有旧脏数据，先清理
-
-如果你已经用旧版本同步过数据，建议先跑一次清理脚本：
-
-```bash
-python scripts/cleanup_dirty_data.py
-```
-
-确认没问题后执行：
-
-```bash
-python scripts/cleanup_dirty_data.py --yes
-```
-
-这个脚本会：
-
-1. 删除 `position_snapshots.ticker like 'unknown_position_%'` 的旧 fallback 行。
-2. 删除受影响日期的旧 `daily_metrics`。
-3. 基于剩余干净持仓重新计算受影响日期的 `daily_metrics`。
-
-### 6. 执行同步
-
-```bash
 python scripts/run_sync.py
-```
-
-你应该能看到类似输出：
-
-```text
-Fetched 12 positions for invest
-Fetched 3 transactions for invest
-Fetched 8 positions for stock_isa
-Fetched 1 transactions for stock_isa
-Sync completed
-```
-
-v2.4 同步时仍会先删除当前 account/date 的旧 positions，再写入最新 positions，所以同一天不会出现旧 fallback ticker 和新真实 ticker 共存的问题。
-
-### 7. 配置 Supabase Dashboard
-
-复制前端配置：
-
-```bash
-cp dashboard/config.example.js dashboard/config.js
-```
-
-编辑 `dashboard/config.js`：
-
-```js
-window.PORTFOLIO_SUPABASE_CONFIG = {
-  url: 'https://your-project-id.supabase.co',
-  anonKey: 'your_supabase_anon_key',
-};
-```
-
-注意：这里必须使用 Supabase anon key，不能使用 service role key。
-
-然后打开：
-
-```text
-dashboard/index.html
-```
-
-Dashboard 会读取：
-
-- `get_latest_dashboard_summary()`
-- `get_position_allocation()`
-- `get_portfolio_timeseries(90)`
-
-### 8. 可选导出 CSV
-
-如果你想离线分析或备份，再运行：
-
-```bash
 python scripts/export_csv.py
 ```
 
-导出文件会放在：
+导出文件在：
 
 ```text
 exports/
 ```
 
-新版会导出四类文件：
+请重点检查并发回这些文件：
 
-1. `daily_metrics_*.csv`：每日汇总指标，适合做资产趋势、账户对比、集中度。
-2. `daily_cash_flows_*.csv`：每日现金流聚合，包含买入、卖出、入金、出金、分红、利息、费用、净投入和交易笔数。
-3. `account_summary_raw_*.csv`：每个账号的账户概览，包含标准字段和 Trading 212 summary 原始字段展开后的 `raw_*` 列。
-4. `latest_positions_*.csv`：最新持仓明细，包含标准字段和 Trading 212 positions 原始字段展开后的 `raw_*` 列。
+- `exports/order_history_*.csv`
+- `exports/raw_api_events_*.csv`
+- `exports/sync_warnings_*.csv`
+- `exports/warehouse_audit_*.json`
 
-## 推荐运行顺序
+这些文件用于判断：
 
-第一次升级到 v2.4 后：
+1. Trading 212 是否真的从 orders endpoint 返回了 Auto Pie / payout-to-invest 明细。
+2. 如果没返回，是 endpoint 空、分页参数不对，还是字段藏在 raw payload 中。
+3. `daily_cash_flows` 的买入/卖出金额来自 orders 还是 transactions。
 
-```bash
-source .venv/bin/activate
-python scripts/cleanup_dirty_data.py
-python scripts/cleanup_dirty_data.py --yes
-python scripts/run_sync.py
-```
+## 如果你是全新数据库
 
-然后：
+全新数据库才需要按顺序执行：
 
-1. 在 Supabase SQL Editor 执行 `sql/schema.sql`。
-2. 在 Supabase SQL Editor 执行 `sql/dashboard_rpc.sql`。
-3. 配置 `dashboard/config.js`。
-4. 打开 `dashboard/index.html`。
+1. `sql/schema.sql`
+2. `sql/dashboard_rpc.sql`
+3. `sql/v2_5_warehouse_patch.sql`
 
-以后每天自动刷新只需要：
+然后再运行：
 
 ```bash
 python scripts/run_sync.py
-```
-
-CSV 导出按需运行：
-
-```bash
 python scripts/export_csv.py
 ```
 
-## GitHub Actions 自动运行
+## v2.5 导出文件说明
 
-项目已经包含：
+`scripts/export_csv.py` 会导出：
 
-```text
-.github/workflows/daily-sync.yml
+1. `daily_metrics_*.csv`：每日资产、现金比例、持仓比例、盈亏等汇总指标。
+2. `daily_cash_flows_*.csv`：每日现金流，包含入金、出金、买入、卖出、分红、利息、费用，以及 raw 展开字段。
+3. `account_summary_raw_*.csv`：账户概览标准字段 + 原始账户 summary 展开字段。
+4. `latest_positions_*.csv`：最新持仓标准字段 + 原始 positions 展开字段。
+5. `order_history_*.csv`：v2.5 新增，订单历史明细。
+6. `raw_api_events_*.csv`：v2.5 新增，每个 API endpoint/page 的原始响应归档。
+7. `sync_warnings_*.csv`：v2.5 新增，同步期间的异常或提示。
+8. `warehouse_audit_*.json`：v2.5 新增，本次导出的数量、endpoint 覆盖、warning code 汇总。
+
+## GitHub Actions
+
+`.github/workflows/daily-sync.yml` 已包含 v2.5 变量：
+
+```yaml
+TRADING212_ORDERS_PATH: ${{ vars.TRADING212_ORDERS_PATH || '/api/v0/equity/history/orders' }}
+SYNC_ORDERS: ${{ vars.SYNC_ORDERS || 'true' }}
+ORDER_LOOKBACK_DAYS: ${{ vars.ORDER_LOOKBACK_DAYS || '7' }}
+ORDER_MAX_PAGES: ${{ vars.ORDER_MAX_PAGES || '3' }}
+ORDER_PAGE_DELAY_SECONDS: ${{ vars.ORDER_PAGE_DELAY_SECONDS || '15' }}
+SYNC_RAW_API: ${{ vars.SYNC_RAW_API || 'true' }}
 ```
 
-你需要在 GitHub 仓库里配置 Secrets：
+如果你已经配置过 GitHub Secrets，只需要确认新增 Variables 即可，不需要重新配置旧的 Secret。
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `TRADING212_ACCOUNTS`
+## 安全边界
 
-可选 Variables：
+请继续遵守：
 
-- `TRADING212_BASE_URL`
-- `TRADING212_ACCOUNT_CASH_PATH`
-- `TRADING212_PORTFOLIO_PATH`
-- `TRADING212_TRANSACTIONS_PATH`
-- `SYNC_TRANSACTIONS`
-- `TRANSACTION_LOOKBACK_DAYS`
-- `TRANSACTION_MAX_PAGES`
-- `TRANSACTION_PAGE_DELAY_SECONDS`
+- 不要把 `.env` 提交到 Git。
+- 不要上传 `dashboard/config.js`。
+- 不要上传 `exports/`、`.venv/`、`__pycache__/`。
+- `SUPABASE_SERVICE_ROLE_KEY` 只能放在本地 `.env`、GitHub Secrets、Secret Manager 或后端环境变量。
+- `SUPABASE_SERVICE_ROLE_KEY` 绝对不能放在 `dashboard/app.js`、HTML、公开仓库、浏览器环境变量或前端构建产物。
+- `TRADING212_API_KEY` 和 `TRADING212_API_SECRET` 不能放进前端。
+- 前端 Dashboard 只能使用 Supabase anon key。
 
-默认每天 UTC 06:00 自动运行，也支持手动点 `workflow_dispatch`。
+## Dashboard
 
-## AI 报告读取方式
+Dashboard 仍然保留，但 v2.5 当前重点是数仓验证。Dashboard 继续读取 Supabase RPC：
 
-如果后续你或其他 AI 想自动分析组合，优先调用 Supabase RPC：
+- `get_latest_dashboard_summary()`
+- `get_position_allocation()`
+- `get_portfolio_timeseries(90)`
 
-```text
-get_ai_report_context(p_days)
-```
-
-例如传 `90`，它会返回：
-
-- 当前组合摘要。
-- 账户拆分。
-- Top holdings。
-- 资产趋势。
-- 现金流趋势。
-- 数据质量提示。
-- 最近同步状态。
-
-这样 AI 不需要直接读所有原始表，也不需要理解数据库结构。
-
-## 字段映射说明
-
-Trading 212 的 positions 返回里，很多关键字段是嵌套结构。当前版本会优先读取：
-
-- `instrument.ticker` / `raw_instrument_ticker` → `ticker`
-- `instrument.name` / `raw_instrument_name` → `instrument_name`
-- `instrument.currency` / `walletImpact.currency` / `raw_*_currency` → `currency`
-- `walletImpact.currentValue` / `raw_walletImpact_currentValue` → `market_value`
-- `walletImpact.totalCost` / `raw_walletImpact_totalCost` → `cost_basis`
-- `walletImpact.unrealizedProfitLoss` / `raw_walletImpact_unrealizedProfitLoss` → `unrealized_pnl`
-- `averagePricePaid` → `average_price`
-
-这样可以避免 UK/GBX 标的用 `quantity * current_price` 计算时出现约 100 倍偏差。
-
-## 每日现金流说明
-
-开启：
-
-```bash
-SYNC_TRANSACTIONS=true
-TRANSACTION_LOOKBACK_DAYS=1
-TRANSACTION_MAX_PAGES=1
-```
-
-同步脚本会把交易流水聚合为 `daily_cash_flows`：
-
-- `deposit_amount`：入金
-- `withdrawal_amount`：出金
-- `buy_amount`：买入金额
-- `sell_amount`：卖出金额
-- `dividend_amount`：分红
-- `interest_amount`：利息
-- `fee_amount`：交易费用
-- `fx_fee_amount`：换汇费用
-- `net_contribution`：入金 - 出金
-- `net_trading_cash_flow`：卖出 + 分红 + 利息 - 买入 - 费用 - 换汇费用
-- `transaction_count`：当天交易笔数
-
-当前版本会按 `dateTime` 判断交易发生日期，只聚合同一天交易；如果 Trading 212 返回最近一页里含多天交易，跨天交易不会被错误算进今天。
-
-如果遇到 Trading 212 `429 Too Many Requests`，建议先保持 `TRANSACTION_MAX_PAGES=1`，必要时临时把 `SYNC_TRANSACTIONS=false`，账户概览和持仓仍会正常同步。
-
-## Dashboard 安全说明
-
-前端可以使用：
-
-```text
-SUPABASE_URL
-SUPABASE_ANON_KEY
-```
-
-前提是：
-
-- 只调用只读 RPC / View。
-- 不开放写入权限。
-- 不暴露 service role key。
-- 如果以后公开部署，建议增加登录鉴权或改成后端代理。
-
-绝对不能放进前端的是：
-
-```text
-SUPABASE_SERVICE_ROLE_KEY
-TRADING212_API_KEY
-TRADING212_API_SECRET
-```
-
-这些只能放在：
-
-- 本地 `.env`
-- GitHub Secrets
-- 后端环境变量
-- Secret Manager
-
-不能放在：
-
-- `dashboard/app.js`
-- `dashboard/config.js`
-- HTML
-- GitHub 公开仓库
-- 浏览器环境变量
-- 前端构建产物
-
-## 当前版本限制
-
-1. 只做数据采集和基础指标，不提供投资建议。
-2. 交易流水默认只拉一天，不自动回补历史。
-3. Trading 212 字段可能变化，所以本版本会保存并导出原始字段。
-4. Dashboard 当前为静态前端直连 Supabase；如果以后要公开分享，建议升级为后端代理模式。
-5. 历史已经污染的非 `unknown_position_*` 异常数据不会被脚本盲目修复；如果历史 raw payload 可恢复，建议以后做专门 backfill。
-
-## 下一步建议
-
-1. 连续同步几天，观察 `get_portfolio_timeseries(90)` 趋势数据。
-2. 如需自动报告，让 AI 或脚本调用 `get_ai_report_context(90)`。
-3. 如果要公开部署 Dashboard，增加 Supabase Auth 或后端代理。
-4. 如果要做更深入分析，可以新增资产类别映射表，把 ETF/股票归类为权益、债券、黄金、现金等。
+如果只做 v2.5 数仓验证，可以先不用管 Dashboard。

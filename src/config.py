@@ -27,12 +27,18 @@ class Settings:
     account_cash_path: str
     portfolio_path: str
     transactions_path: str
+    orders_path: str
     accounts: List[AccountConfig]
     export_dir: str
     sync_transactions: bool
     transaction_lookback_days: int
     transaction_max_pages: int
     transaction_page_delay_seconds: int
+    sync_orders: bool
+    order_lookback_days: int
+    order_max_pages: int
+    order_page_delay_seconds: int
+    sync_raw_api: bool
 
 
 def _required_env(name: str) -> str:
@@ -110,10 +116,19 @@ def load_settings() -> Settings:
             "TRADING212_TRANSACTIONS_PATH",
             "/api/v0/equity/history/transactions",
         ),
+        orders_path=os.getenv(
+            "TRADING212_ORDERS_PATH",
+            "/api/v0/equity/history/orders",
+        ),
         accounts=_parse_accounts(_required_env("TRADING212_ACCOUNTS")),
         export_dir=os.getenv("EXPORT_DIR", "exports"),
         sync_transactions=_env_bool("SYNC_TRANSACTIONS", default=True),
         transaction_lookback_days=_env_int("TRANSACTION_LOOKBACK_DAYS", default=1, minimum=1),
         transaction_max_pages=_env_int("TRANSACTION_MAX_PAGES", default=1, minimum=1),
         transaction_page_delay_seconds=_env_int("TRANSACTION_PAGE_DELAY_SECONDS", default=15, minimum=0),
+        sync_orders=_env_bool("SYNC_ORDERS", default=True),
+        order_lookback_days=_env_int("ORDER_LOOKBACK_DAYS", default=7, minimum=1),
+        order_max_pages=_env_int("ORDER_MAX_PAGES", default=3, minimum=1),
+        order_page_delay_seconds=_env_int("ORDER_PAGE_DELAY_SECONDS", default=15, minimum=0),
+        sync_raw_api=_env_bool("SYNC_RAW_API", default=True),
     )

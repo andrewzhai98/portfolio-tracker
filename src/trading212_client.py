@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 import requests
@@ -59,6 +59,24 @@ class Trading212Client:
             f"Trading 212 API rate limit persisted after {max_retries} retries: {url}"
         )
 
+    @staticmethod
+    def _extract_items(data: Any, collection_keys: Tuple[str, ...]) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            for key in collection_keys:
+                value = data.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _next_path(data: Any) -> Optional[str]:
+        if not isinstance(data, dict):
+            return None
+        next_page_path = data.get("nextPagePath") or data.get("next_page_path") or data.get("next")
+        return next_page_path if isinstance(next_page_path, str) and next_page_path else None
+
     def get_account_summary(self, path: str) -> Dict[str, Any]:
         data = self._get(path)
         if isinstance(data, dict):
@@ -70,23 +88,19 @@ class Trading212Client:
 
     def get_portfolio(self, path: str) -> List[Dict[str, Any]]:
         data = self._get(path)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for key in ("items", "positions", "data", "results"):
-                value = data.get(key)
-                if isinstance(value, list):
-                    return value
-        return []
+        return self._extract_items(data, ("items", "positions", "data", "results"))
 
-    def get_transactions(
+    def get_paginated_items_with_pages(
         self,
         path: str,
         params: Optional[Dict[str, Any]] = None,
         max_pages: int = 1,
         page_delay_seconds: int = 15,
-    ) -> List[Dict[str, Any]]:
-        transactions: List[Dict[str, Any]] = []
+        collection_keys: Tuple[str, ...] = ("items", "data", "results"),
+        label: str = "items",
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        items: List[Dict[str, Any]] = []
+        raw_pages: List[Dict[str, Any]] = []
         next_path: Optional[str] = path
         next_params: Optional[Dict[str, Any]] = params
         seen_paths = set()
@@ -100,38 +114,77 @@ class Trading212Client:
 
             page_count += 1
             if page_count > max_pages:
-                print(
-                    f"Stopped transaction pagination after {max_pages} pages "
-                    "to avoid Trading 212 rate limits."
-                )
+                print(f"Stopped {label} pagination after {max_pages} pages to avoid Trading 212 rate limits.")
                 break
 
             if page_count > 1 and page_delay_seconds > 0:
-                print(f"Waiting {page_delay_seconds}s before fetching next transaction page...")
+                print(f"Waiting {page_delay_seconds}s before fetching next {label} page...")
                 time.sleep(page_delay_seconds)
 
             data = self._get(next_path, params=next_params)
+            page_items = self._extract_items(data, collection_keys)
+            items.extend(page_items)
+            raw_pages.append({
+                "page_number": page_count,
+                "path": next_path,
+                "params": next_params or {},
+                "item_count": len(page_items),
+                "payload": data,
+            })
+
             next_params = None
+            next_path = self._next_path(data)
 
-            if isinstance(data, list):
-                transactions.extend(item for item in data if isinstance(item, dict))
-                break
+        return items, raw_pages
 
-            if not isinstance(data, dict):
-                break
+    def get_transactions_with_pages(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        max_pages: int = 1,
+        page_delay_seconds: int = 15,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        return self.get_paginated_items_with_pages(
+            path,
+            params=params,
+            max_pages=max_pages,
+            page_delay_seconds=page_delay_seconds,
+            collection_keys=("items", "transactions", "data", "results"),
+            label="transaction",
+        )
 
-            page_items: Any = None
-            for key in ("items", "transactions", "data", "results"):
-                value = data.get(key)
-                if isinstance(value, list):
-                    page_items = value
-                    break
+    def get_transactions(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        max_pages: int = 1,
+        page_delay_seconds: int = 15,
+    ) -> List[Dict[str, Any]]:
+        items, _pages = self.get_transactions_with_pages(path, params, max_pages, page_delay_seconds)
+        return items
 
-            if page_items is None:
-                break
+    def get_orders_with_pages(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        max_pages: int = 1,
+        page_delay_seconds: int = 15,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        return self.get_paginated_items_with_pages(
+            path,
+            params=params,
+            max_pages=max_pages,
+            page_delay_seconds=page_delay_seconds,
+            collection_keys=("items", "orders", "data", "results"),
+            label="order",
+        )
 
-            transactions.extend(item for item in page_items if isinstance(item, dict))
-            next_page_path = data.get("nextPagePath") or data.get("next_page_path") or data.get("next")
-            next_path = next_page_path if isinstance(next_page_path, str) and next_page_path else None
-
-        return transactions
+    def get_orders(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        max_pages: int = 1,
+        page_delay_seconds: int = 15,
+    ) -> List[Dict[str, Any]]:
+        items, _pages = self.get_orders_with_pages(path, params, max_pages, page_delay_seconds)
+        return items

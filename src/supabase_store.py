@@ -21,6 +21,18 @@ class SupabaseStore:
             raise RuntimeError(f"Supabase operation returned no response: {operation}")
         return getattr(result, "data", None)
 
+    @staticmethod
+    def _optional_data(result: Any) -> Any:
+        """Return None for optional maybe_single queries with no matching row.
+
+        Some supabase-py/postgrest versions can return None for maybe_single()
+        when there is no row. Optional snapshot/cash-flow lookups should treat
+        that as a legitimate missing record, not as a sync failure.
+        """
+        if result is None:
+            return None
+        return getattr(result, "data", None)
+
     @classmethod
     def _rows(cls, result: Any, operation: str) -> List[Dict[str, Any]]:
         data = cls._data(result, operation)
@@ -199,7 +211,7 @@ class SupabaseStore:
             .maybe_single()
             .execute()
         )
-        return self._data(result, "read row")
+        return self._optional_data(result)
 
     def upsert_daily_metric(self, payload: Dict[str, Any]) -> None:
         self.client.table("daily_metrics").upsert(
@@ -226,7 +238,7 @@ class SupabaseStore:
             .maybe_single()
             .execute()
         )
-        return self._data(result, "read row")
+        return self._optional_data(result)
 
     def get_previous_account_snapshot(self, account_id: str, before_date: date) -> Optional[Dict[str, Any]]:
         result = (

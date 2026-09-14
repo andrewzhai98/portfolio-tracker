@@ -15,6 +15,17 @@ class SupabaseStore:
             settings.supabase_service_role_key,
         )
 
+    @staticmethod
+    def _data(result: Any, operation: str) -> Any:
+        if result is None:
+            raise RuntimeError(f"Supabase operation returned no response: {operation}")
+        return getattr(result, "data", None)
+
+    @classmethod
+    def _rows(cls, result: Any, operation: str) -> List[Dict[str, Any]]:
+        data = cls._data(result, operation)
+        return data if isinstance(data, list) else []
+
     def upsert_account(self, account: AccountConfig) -> Dict[str, Any]:
         payload = {
             "provider": "trading212",
@@ -27,7 +38,7 @@ class SupabaseStore:
             .upsert(payload, on_conflict="account_key")
             .execute()
         )
-        rows = result.data or []
+        rows = self._rows(result, "read rows")
         if rows:
             return rows[0]
 
@@ -38,11 +49,14 @@ class SupabaseStore:
             .single()
             .execute()
         )
-        return result.data
+        return self._data(result, "read row")
 
     def list_accounts(self) -> List[Dict[str, Any]]:
         result = self.client.table("accounts").select("*").execute()
-        return result.data or []
+        return self._rows(result, "read rows")
+
+    def count_accounts(self) -> int:
+        return len(self.list_accounts())
 
     def create_sync_run(self, account_id: str) -> str:
         result = (
@@ -50,7 +64,10 @@ class SupabaseStore:
             .insert({"account_id": account_id, "status": "running"})
             .execute()
         )
-        return result.data[0]["id"]
+        rows = self._rows(result, "create sync run")
+        if not rows or not rows[0].get("id"):
+            raise RuntimeError("Supabase did not return a sync_run id after insert")
+        return rows[0]["id"]
 
     def finish_sync_run(
         self,
@@ -82,7 +99,7 @@ class SupabaseStore:
             .eq("snapshot_date", snapshot_date.isoformat())
             .execute()
         )
-        return len(result.data or [])
+        return len(self._rows(result, "delete rows"))
 
     def get_unknown_position_snapshot_dates(self) -> List[Dict[str, Any]]:
         result = (
@@ -91,7 +108,7 @@ class SupabaseStore:
             .like("ticker", "unknown_position_%")
             .execute()
         )
-        rows = result.data or []
+        rows = self._rows(result, "read rows")
         seen = set()
         unique_rows: List[Dict[str, Any]] = []
         for row in rows:
@@ -109,7 +126,7 @@ class SupabaseStore:
             .like("ticker", "unknown_position_%")
             .execute()
         )
-        return len(result.data or [])
+        return len(self._rows(result, "delete rows"))
 
     def upsert_position_snapshots(self, payloads: Iterable[Dict[str, Any]]) -> int:
         rows = list(payloads)
@@ -182,7 +199,7 @@ class SupabaseStore:
             .maybe_single()
             .execute()
         )
-        return result.data
+        return self._data(result, "read row")
 
     def upsert_daily_metric(self, payload: Dict[str, Any]) -> None:
         self.client.table("daily_metrics").upsert(
@@ -198,7 +215,7 @@ class SupabaseStore:
             .eq("metric_date", metric_date.isoformat())
             .execute()
         )
-        return len(result.data or [])
+        return len(self._rows(result, "delete rows"))
 
     def get_account_snapshot(self, account_id: str, snapshot_date: date) -> Optional[Dict[str, Any]]:
         result = (
@@ -209,7 +226,7 @@ class SupabaseStore:
             .maybe_single()
             .execute()
         )
-        return result.data
+        return self._data(result, "read row")
 
     def get_previous_account_snapshot(self, account_id: str, before_date: date) -> Optional[Dict[str, Any]]:
         result = (
@@ -221,7 +238,7 @@ class SupabaseStore:
             .limit(1)
             .execute()
         )
-        rows = result.data or []
+        rows = self._rows(result, "read rows")
         return rows[0] if rows else None
 
     def get_position_snapshots(self, account_id: str, snapshot_date: date) -> List[Dict[str, Any]]:
@@ -232,7 +249,7 @@ class SupabaseStore:
             .eq("snapshot_date", snapshot_date.isoformat())
             .execute()
         )
-        return result.data or []
+        return self._rows(result, "read rows")
 
     def get_month_start_snapshot(self, account_id: str, snapshot_date: date) -> Optional[Dict[str, Any]]:
         month_start = snapshot_date.replace(day=1)
@@ -246,7 +263,7 @@ class SupabaseStore:
             .limit(1)
             .execute()
         )
-        rows = result.data or []
+        rows = self._rows(result, "read rows")
         return rows[0] if rows else None
 
     def get_recent_daily_metrics(self, limit: int = 30) -> List[Dict[str, Any]]:
@@ -257,7 +274,7 @@ class SupabaseStore:
             .limit(limit)
             .execute()
         )
-        return result.data or []
+        return self._rows(result, "read rows")
 
     def get_recent_daily_cash_flows(self, limit: int = 200) -> List[Dict[str, Any]]:
         result = (
@@ -267,7 +284,7 @@ class SupabaseStore:
             .limit(limit)
             .execute()
         )
-        return result.data or []
+        return self._rows(result, "read rows")
 
     def get_recent_account_snapshots(self, limit: int = 200) -> List[Dict[str, Any]]:
         result = (
@@ -277,7 +294,7 @@ class SupabaseStore:
             .limit(limit)
             .execute()
         )
-        return result.data or []
+        return self._rows(result, "read rows")
 
     def get_recent_order_history(self, limit: int = 500) -> List[Dict[str, Any]]:
         result = (
@@ -287,7 +304,7 @@ class SupabaseStore:
             .limit(limit)
             .execute()
         )
-        return result.data or []
+        return self._rows(result, "read rows")
 
     def get_recent_raw_api_events(self, limit: int = 200) -> List[Dict[str, Any]]:
         result = (
@@ -297,7 +314,7 @@ class SupabaseStore:
             .limit(limit)
             .execute()
         )
-        return result.data or []
+        return self._rows(result, "read rows")
 
     def get_recent_sync_warnings(self, limit: int = 200) -> List[Dict[str, Any]]:
         result = (
@@ -307,15 +324,15 @@ class SupabaseStore:
             .limit(limit)
             .execute()
         )
-        return result.data or []
+        return self._rows(result, "read rows")
 
     def get_latest_positions(self) -> List[Dict[str, Any]]:
         result = self.client.rpc("get_latest_positions").execute()
-        return result.data or []
+        return self._rows(result, "read rows")
 
     def get_latest_position_snapshots(self) -> List[Dict[str, Any]]:
         accounts_result = self.client.table("accounts").select("id, account_key, account_name, base_currency").execute()
-        accounts = accounts_result.data or []
+        accounts = self._rows(accounts_result, "list accounts for latest positions")
         all_rows: List[Dict[str, Any]] = []
 
         for account in accounts:
@@ -327,7 +344,7 @@ class SupabaseStore:
                 .limit(1)
                 .execute()
             )
-            latest_rows = latest_result.data or []
+            latest_rows = self._rows(latest_result, "get latest position date")
             if not latest_rows:
                 continue
 
@@ -339,7 +356,7 @@ class SupabaseStore:
                 .eq("snapshot_date", latest_date)
                 .execute()
             )
-            for row in positions_result.data or []:
+            for row in self._rows(positions_result, "get latest position snapshots"):
                 row["accounts"] = account
                 all_rows.append(row)
 

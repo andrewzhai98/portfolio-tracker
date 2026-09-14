@@ -858,7 +858,6 @@ def sync_one_account(settings: Settings, store: SupabaseStore, account: AccountC
             positions,
             account.base_currency,
         )
-        previous_snapshot = store.get_previous_account_snapshot(account_id, snapshot_date)
         store.upsert_account_snapshot(account_snapshot)
         updated += 1
 
@@ -918,5 +917,15 @@ def sync_one_account(settings: Settings, store: SupabaseStore, account: AccountC
 
 def sync_all_accounts(settings: Settings) -> None:
     store = SupabaseStore(settings)
+    errors: List[str] = []
+
     for account in settings.accounts:
-        sync_one_account(settings, store, account)
+        try:
+            sync_one_account(settings, store, account)
+        except Exception as exc:
+            message = f"{account.account_key}: {exc}"
+            errors.append(message)
+            print(f"Sync failed for {message}")
+
+    if errors:
+        raise RuntimeError("One or more account syncs failed: " + " | ".join(errors))

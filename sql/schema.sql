@@ -201,13 +201,13 @@ as $$
     s.invested_value,
     case when s.total_value is not null and s.total_value <> 0 then s.cash_value / s.total_value else null end as cash_ratio,
     case when s.total_value is not null and s.total_value <> 0 then s.invested_value / s.total_value else null end as invested_ratio,
-    m.unrealized_pnl,
-    coalesce(m.dividend_income, f.dividend_amount) as dividend_income,
-    f.deposit_amount,
-    f.withdrawal_amount,
-    f.buy_amount,
-    f.sell_amount,
-    f.transaction_count,
+    coalesce(m.unrealized_pnl, 0) as unrealized_pnl,
+    coalesce(m.dividend_income, f.dividend_amount, 0) as dividend_income,
+    coalesce(f.deposit_amount, 0) as deposit_amount,
+    coalesce(f.withdrawal_amount, 0) as withdrawal_amount,
+    coalesce(f.buy_amount, 0) as buy_amount,
+    coalesce(f.sell_amount, 0) as sell_amount,
+    coalesce(f.transaction_count, 0) as transaction_count,
     a.base_currency
   from accounts a
   join account_snapshots s on s.account_id = a.id

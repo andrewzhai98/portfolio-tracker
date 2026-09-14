@@ -16,7 +16,9 @@ returns table (
 language sql
 stable
 as $$
-  with daily as (
+  with expected_accounts as (
+    select count(*)::integer as account_count from accounts
+  ), daily as (
     select
       s.snapshot_date as metric_date,
       sum(coalesce(s.total_value, 0)) as total_value,
@@ -24,7 +26,8 @@ as $$
       sum(coalesce(s.invested_value, 0)) as invested_value,
       sum(coalesce(m.unrealized_pnl, 0)) as unrealized_pnl,
       sum(coalesce(m.dividend_income, 0)) as dividend_income,
-      min(a.base_currency) as base_currency
+      min(a.base_currency) as base_currency,
+      count(distinct s.account_id)::integer as account_count
     from account_snapshots s
     join accounts a on a.id = s.account_id
     left join daily_metrics m on m.account_id = s.account_id and m.metric_date = s.snapshot_date
@@ -42,6 +45,8 @@ as $$
     dividend_income,
     base_currency
   from daily
+  cross join expected_accounts
+  where daily.account_count = expected_accounts.account_count
   order by metric_date;
 $$;
 
@@ -154,8 +159,29 @@ returns jsonb
 language sql
 stable
 as $$
-  with latest_summary as (
+  with expected_accounts as (
+    select count(*)::integer as account_count from accounts
+  ), latest_complete_date as (
+    select s.snapshot_date
+    from account_snapshots s
+    group by s.snapshot_date
+    having count(distinct s.account_id) = (select account_count from expected_accounts)
+    order by s.snapshot_date desc
+    limit 1
+  ), latest_summary as (
     select * from get_latest_dashboard_summary()
+  ), complete_snapshot as (
+    select
+      s.snapshot_date,
+      s.total_value,
+      s.cash_value,
+      s.invested_value,
+      coalesce(m.unrealized_pnl, 0) as unrealized_pnl,
+      a.base_currency
+    from account_snapshots s
+    join accounts a on a.id = s.account_id
+    left join daily_metrics m on m.account_id = s.account_id and m.metric_date = s.snapshot_date
+    where s.snapshot_date = (select snapshot_date from latest_complete_date)
   ), portfolio as (
     select jsonb_build_object(
       'as_of_date', max(snapshot_date),
@@ -165,9 +191,10 @@ as $$
       'cash_ratio', case when sum(coalesce(total_value, 0)) <> 0 then sum(coalesce(cash_value, 0)) / sum(coalesce(total_value, 0)) else null end,
       'invested_ratio', case when sum(coalesce(total_value, 0)) <> 0 then sum(coalesce(invested_value, 0)) / sum(coalesce(total_value, 0)) else null end,
       'unrealized_pnl', sum(coalesce(unrealized_pnl, 0)),
-      'base_currency', min(base_currency)
+      'base_currency', min(base_currency),
+      'is_complete_account_date', true
     ) as data
-    from latest_summary
+    from complete_snapshot
   ), accounts_json as (
     select coalesce(jsonb_agg(to_jsonb(latest_summary) order by total_value desc nulls last), '[]'::jsonb) as data
     from latest_summary
@@ -198,6 +225,9 @@ as $$
         order by started_at desc
         limit 1
       ),
+      'latest_complete_snapshot_date', (select snapshot_date from latest_complete_date),
+      'latest_available_snapshot_date', (select max(snapshot_date) from account_snapshots),
+      'expected_account_count', (select account_count from expected_accounts),
       'report_window_days', greatest(coalesce(p_days, 90), 1)
     ) as data
   )

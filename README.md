@@ -1,10 +1,38 @@
-# Trading 212 Portfolio Tracker v2.5.4
+# Trading 212 Portfolio Tracker v2.5.5
 
 这是一个用于从多个 Trading 212 API 账号采集资产数据、写入 Supabase，并提供可选 Dashboard / CSV 导出的个人资产数据仓库项目。
 
 v2.5 的重点不是可视化，而是补齐数仓验证链路：**订单明细、Raw API 归档、同步告警、本地导出审计文件**。
 
 > 说明：本项目只做个人资产数据采集、整理和分析前置数据准备，不构成投资建议。
+
+## v2.5.5 修复内容
+
+v2.5.5 重点修复同步失败和部分账户缺失时的数据质量问题，避免 Dashboard / AI 报告把单账户数据误认为整个组合。
+
+本版本新增 / 调整：
+
+1. Trading 212 API 空响应、超时和非法 JSON 会抛出明确错误，不再把 `None` 继续传入后续同步链路。
+2. 多账号同步会逐个账号执行；单个账号失败会记录对应 `sync_runs=failed`，其余账号仍会尝试同步，最后整体任务以失败状态退出，方便 GitHub Actions 告警。
+3. `daily_metrics.dividend_income` 会从 `daily_cash_flows.dividend_amount` 写入；没有分红时写 `0`，不再写 `null`。
+4. `daily_metrics.realized_pnl` 暂时写保守 `0`；真正卖出盈亏仍需要后续实现 FIFO / 平均成本等成本基础算法。
+5. `get_portfolio_timeseries()` 只返回所有账号都有 snapshot 的完整日期，避免 Stock ISA 缺失时把 Invest 单账户数值误标为组合总资产。
+6. `get_ai_report_context()` 的组合汇总改用最新完整账户日期，并在 `data_quality` 中输出 `latest_complete_snapshot_date`、`latest_available_snapshot_date` 和 `expected_account_count`。
+
+### 从 v2.5.4 升级后只需要执行
+
+```bash
+python scripts/run_sync.py
+python scripts/export_csv.py
+```
+
+并在 Supabase SQL Editor 重新执行：
+
+```text
+sql/schema.sql
+sql/dashboard_rpc.sql
+```
+
 
 ## v2.5.4 修复内容
 

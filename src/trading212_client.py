@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import time
+from json import JSONDecodeError
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 import requests
+
+
+class Trading212APIError(RuntimeError):
+    """Raised when Trading 212 returns an unusable API response."""
 
 
 class Trading212Client:
@@ -27,9 +32,19 @@ class Trading212Client:
         max_retries: int = 5,
     ) -> Any:
         url = self._url(path)
+        last_error: Optional[BaseException] = None
 
         for attempt in range(max_retries):
-            response = self.session.get(url, params=params, timeout=self.timeout)
+            try:
+                response = self.session.get(url, params=params, timeout=self.timeout)
+            except requests.RequestException as exc:
+                last_error = exc
+                wait_seconds = min(60, 10 * (attempt + 1))
+                if attempt < max_retries - 1:
+                    print(f"Trading 212 request failed for {url}. Waiting {wait_seconds}s before retry: {exc}")
+                    time.sleep(wait_seconds)
+                    continue
+                raise Trading212APIError(f"Trading 212 request failed for {url}: {exc}") from exc
 
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
@@ -51,10 +66,19 @@ class Trading212Client:
                     response=response,
                 ) from exc
 
-            if not response.text:
-                return None
-            return response.json()
+            if not response.text or not response.text.strip():
+                raise Trading212APIError(f"Trading 212 returned an empty response for {url}")
 
+            try:
+                return response.json()
+            except JSONDecodeError as exc:
+                detail = response.text[:500]
+                raise Trading212APIError(
+                    f"Trading 212 returned invalid JSON for {url}. Response body: {detail}"
+                ) from exc
+
+        if last_error is not None:
+            raise Trading212APIError(f"Trading 212 request failed for {url}: {last_error}") from last_error
         raise requests.HTTPError(
             f"Trading 212 API rate limit persisted after {max_retries} retries: {url}"
         )
